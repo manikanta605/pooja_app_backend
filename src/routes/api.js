@@ -11,6 +11,32 @@ const todayIso = () => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
 
+const YEARLY_PRICE = 1299;
+
+function getSubInfo(user) {
+  const active =
+    Boolean(user?.sub_active) &&
+    Boolean(user?.sub_expires_at) &&
+    new Date(user.sub_expires_at).getTime() > Date.now();
+  return {
+    active,
+    plan: user?.sub_plan || 'yearly_1299',
+    price: YEARLY_PRICE,
+    expiresAt: user?.sub_expires_at || '',
+  };
+}
+
+function requireSubscription(req, res, next) {
+  const user = db.prepare('SELECT sub_active, sub_plan, sub_expires_at FROM users WHERE id = ?').get(req.userId);
+  if (!getSubInfo(user).active) {
+    return res.status(403).json({
+      error: 'Yearly ₹1,299 subscription required',
+      code: 'SUBSCRIPTION_REQUIRED',
+    });
+  }
+  next();
+}
+
 router.get('/bootstrap', (req, res) => {
   const uid = req.userId;
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(uid);
@@ -37,6 +63,7 @@ router.get('/bootstrap', (req, res) => {
       locations: user.locations || '',
       notify: Boolean(user.notify),
     },
+    subscription: getSubInfo(user),
     types,
     customers,
     bookings,
@@ -68,8 +95,28 @@ router.put('/profile', (req, res) => {
   res.json({ ok: true, profile: { name, username: cur.username, phone, email, addr, locations, notify: Boolean(notify) }, lang });
 });
 
+/* Subscription */
+router.post('/subscription/activate', (req, res) => {
+  const now = new Date();
+  const exp = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+  const startedAt = now.toISOString();
+  const expiresAt = exp.toISOString();
+
+  runTx(() => {
+    db.prepare('UPDATE users SET sub_active = 1, sub_plan = ?, sub_expires_at = ? WHERE id = ?')
+      .run('yearly_1299', expiresAt, req.userId);
+    db.prepare('INSERT INTO subscriptions (user_id, plan, amount, status, started_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(req.userId, 'yearly_1299', YEARLY_PRICE, 'active', startedAt, expiresAt);
+  });
+
+  res.json({
+    ok: true,
+    subscription: { active: true, plan: 'yearly_1299', price: YEARLY_PRICE, expiresAt },
+  });
+});
+
 /* Puja Types */
-router.post('/types', (req, res) => {
+router.post('/types', requireSubscription, (req, res) => {
   const name = String(req.body?.name || '').trim();
   if (name.length < 2) return res.status(400).json({ error: 'Invalid puja type' });
   db.prepare('INSERT OR IGNORE INTO puja_types (user_id, name) VALUES (?, ?)').run(req.userId, name);
@@ -82,7 +129,7 @@ router.delete('/types/:name', (req, res) => {
 });
 
 /* Customers */
-router.post('/customers', (req, res) => {
+router.post('/customers', requireSubscription, (req, res) => {
   const name = String(req.body?.name || '').trim();
   const phone = String(req.body?.phone || '').trim();
   const gotram = String(req.body?.gotram || '-').trim() || '-';
@@ -99,7 +146,7 @@ router.post('/customers', (req, res) => {
   res.status(201).json({ id: Number(info.lastInsertRowid), name, phone, gotram, addr, family, notes });
 });
 
-router.put('/customers/:id', (req, res) => {
+router.put('/customers/:id', requireSubscription, (req, res) => {
   const id = Number(req.params.id);
   const name = String(req.body?.name || '').trim();
   const phone = String(req.body?.phone || '').trim();
@@ -124,7 +171,7 @@ router.delete('/customers/:id', (req, res) => {
 });
 
 /* Bookings */
-router.post('/bookings', (req, res) => {
+router.post('/bookings', requireSubscription, (req, res) => {
   const uid = req.userId;
   const { cid, newCustomer, type, date, time, addr, total, adv = 0, notes = '' } = req.body || {};
 
@@ -177,7 +224,7 @@ router.post('/bookings', (req, res) => {
   res.status(201).json(result);
 });
 
-router.put('/bookings/:id', (req, res) => {
+router.put('/bookings/:id', requireSubscription, (req, res) => {
   const id = Number(req.params.id);
   const { cid, type, date, time, addr, total, adv = 0, notes = '' } = req.body || {};
   if (!type || !/^\d{4}-\d{2}-\d{2}$/.test(String(date)) || !/^\d{2}:\d{2}$/.test(String(time)) || !(Number(total) > 0) || Number(adv) > Number(total)) {
@@ -202,7 +249,7 @@ router.patch('/bookings/:id/status', (req, res) => {
   res.json({ ok: true, id, status });
 });
 
-router.post('/bookings/:id/payments', (req, res) => {
+router.post('/bookings/:id/payments', requireSubscription, (req, res) => {
   const id = Number(req.params.id);
   const amount = Number(req.body?.amount);
   const mode = ['Cash', 'UPI', 'Bank'].includes(req.body?.mode) ? req.body.mode : 'UPI';
@@ -229,7 +276,7 @@ router.post('/bookings/:id/payments', (req, res) => {
 });
 
 /* Samagri */
-router.post('/samagri', (req, res) => {
+router.post('/samagri', requireSubscription, (req, res) => {
   const puja = String(req.body?.puja || '').trim();
   const name = String(req.body?.name || '').trim();
   const qty = String(req.body?.qty || '1').trim() || '1';
@@ -259,7 +306,7 @@ router.delete('/samagri/:id', (req, res) => {
 });
 
 /* Payments */
-router.post('/payments', (req, res) => {
+router.post('/payments', requireSubscription, (req, res) => {
   const kind = req.body?.kind === 'expense' ? 'expense' : 'income';
   const title = String(req.body?.title || '').trim();
   const amount = Number(req.body?.amount);
@@ -273,7 +320,7 @@ router.post('/payments', (req, res) => {
 });
 
 /* Reminders */
-router.post('/reminders', (req, res) => {
+router.post('/reminders', requireSubscription, (req, res) => {
   const title = String(req.body?.title || '').trim();
   const date = String(req.body?.date || '').trim();
   const time = String(req.body?.time || '').trim();
@@ -299,7 +346,7 @@ router.delete('/reminders/:id', (req, res) => {
 });
 
 /* Rituals */
-router.post('/rituals', (req, res) => {
+router.post('/rituals', requireSubscription, (req, res) => {
   const family = String(req.body?.family || '').trim();
   const gotram = String(req.body?.gotram || '-').trim() || '-';
   const type = String(req.body?.type || '').trim();
@@ -321,7 +368,7 @@ router.delete('/rituals/:id', (req, res) => {
 });
 
 /* Stock */
-router.post('/stock', (req, res) => {
+router.post('/stock', requireSubscription, (req, res) => {
   const name = String(req.body?.name || '').trim();
   const qty = Number(req.body?.qty);
   const unit = String(req.body?.unit || 'pcs').trim() || 'pcs';

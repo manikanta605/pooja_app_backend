@@ -122,10 +122,30 @@ db.exec(`
     unit TEXT NOT NULL DEFAULT 'pcs',
     min_qty REAL NOT NULL DEFAULT 3
   );
+
+  CREATE TABLE IF NOT EXISTS subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    plan TEXT NOT NULL,
+    amount REAL NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 try {
   db.exec('ALTER TABLE users ADD COLUMN email TEXT DEFAULT ""');
+} catch {}
+try {
+  db.exec('ALTER TABLE users ADD COLUMN sub_active INTEGER DEFAULT 0');
+} catch {}
+try {
+  db.exec("ALTER TABLE users ADD COLUMN sub_plan TEXT DEFAULT 'yearly_1299'");
+} catch {}
+try {
+  db.exec('ALTER TABLE users ADD COLUMN sub_expires_at TEXT DEFAULT ""');
 } catch {}
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL AND email != ''");
 
