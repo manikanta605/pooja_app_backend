@@ -156,7 +156,18 @@ db.exec(`
     qty TEXT NOT NULL,
     te TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS samagri_checks (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    item_key TEXT NOT NULL,
+    done INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, item_key)
+  );
 `);
+
+try {
+  db.exec("ALTER TABLE bookings ADD COLUMN items_json TEXT DEFAULT '[]'");
+} catch {}
 
 const { POOJA_CATEGORIES, POOJA_CATALOG } = require('./catalogSeed');
 const catCount = db.prepare('SELECT COUNT(*) AS cnt FROM pooja_catalog').get().cnt;

@@ -83,8 +83,18 @@ router.get('/bootstrap', (req, res) => {
 
   const types = db.prepare('SELECT name FROM puja_types WHERE user_id = ? ORDER BY id').all(uid).map((r) => r.name);
   const customers = db.prepare('SELECT id, name, phone, gotram, addr, family, notes FROM customers WHERE user_id = ? ORDER BY id DESC').all(uid);
-  const bookings = db.prepare('SELECT id, cid, type, date, time, addr, total, adv, status, notes FROM bookings WHERE user_id = ? ORDER BY date, time').all(uid);
+  const bookings = db
+    .prepare('SELECT id, cid, type, date, time, addr, total, adv, status, notes, items_json FROM bookings WHERE user_id = ? ORDER BY date, time')
+    .all(uid)
+    .map((b) => {
+      let items = [];
+      try { items = JSON.parse(b.items_json || '[]'); } catch {}
+      return { id: b.id, cid: b.cid, type: b.type, date: b.date, time: b.time, addr: b.addr, total: b.total, adv: b.adv, status: b.status, notes: b.notes, items };
+    });
   const samagri = db.prepare('SELECT id, puja, name, qty, done FROM samagri WHERE user_id = ? ORDER BY id').all(uid).map((r) => ({ ...r, done: Boolean(r.done) }));
+  const checkRows = db.prepare('SELECT item_key, done FROM samagri_checks WHERE user_id = ?').all(uid);
+  const samagriChecks = {};
+  for (const r of checkRows) samagriChecks[r.item_key] = Boolean(r.done);
   const payments = db.prepare('SELECT id, kind, booking_id AS bookingId, title, amount, mode, date FROM payments WHERE user_id = ? ORDER BY id DESC').all(uid);
   const reminders = db.prepare('SELECT id, title, date, time, done FROM reminders WHERE user_id = ? ORDER BY date, time').all(uid).map((r) => ({ ...r, done: Boolean(r.done) }));
   const rituals = db.prepare('SELECT id, family, gotram, type, date, tithi, reminder_date AS reminderDate FROM rituals WHERE user_id = ? ORDER BY date').all(uid);
@@ -108,6 +118,7 @@ router.get('/bootstrap', (req, res) => {
     customers,
     bookings,
     samagri,
+    samagriChecks,
     payments,
     reminders,
     rituals,
@@ -215,7 +226,9 @@ router.delete('/customers/:id', (req, res) => {
 /* Bookings */
 router.post('/bookings', requireSubscription, (req, res) => {
   const uid = req.userId;
-  const { cid, newCustomer, type, date, time, addr, total, adv = 0, notes = '' } = req.body || {};
+  const { cid, newCustomer, type, date, time, addr, total, adv = 0, notes = '', items = [] } = req.body || {};
+  const safeItems = Array.isArray(items) ? items : [];
+  const itemsJson = JSON.stringify(safeItems);
 
   if (!type || !/^\d{4}-\d{2}-\d{2}$/.test(String(date)) || !/^\d{2}:\d{2}$/.test(String(time)) || !(Number(total) > 0) || Number(adv) > Number(total)) {
     return res.status(400).json({ error: 'Invalid booking details' });
@@ -242,8 +255,8 @@ router.post('/bookings', requireSubscription, (req, res) => {
     if (!cust) throw Object.assign(new Error('Customer not found'), { status: 404 });
 
     const bInfo = db
-      .prepare('INSERT INTO bookings (user_id, cid, type, date, time, addr, total, adv, status, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(uid, targetCid, String(type), String(date), String(time), String(addr || '-').trim(), Number(total), Number(adv) || 0, 'upcoming', String(notes || '').trim());
+      .prepare('INSERT INTO bookings (user_id, cid, type, date, time, addr, total, adv, status, notes, items_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(uid, targetCid, String(type), String(date), String(time), String(addr || '-').trim(), Number(total), Number(adv) || 0, 'upcoming', String(notes || '').trim(), itemsJson);
     const bookingId = Number(bInfo.lastInsertRowid);
 
     let createdPayment = null;
@@ -257,7 +270,7 @@ router.post('/bookings', requireSubscription, (req, res) => {
     }
 
     return {
-      booking: { id: bookingId, cid: targetCid, type: String(type), date: String(date), time: String(time), addr: String(addr || '-').trim(), total: Number(total), adv: Number(adv) || 0, status: 'upcoming', notes: String(notes || '').trim() },
+      booking: { id: bookingId, cid: targetCid, type: String(type), date: String(date), time: String(time), addr: String(addr || '-').trim(), total: Number(total), adv: Number(adv) || 0, status: 'upcoming', notes: String(notes || '').trim(), items: safeItems },
       customer: createdCustomer,
       payment: createdPayment,
     };
@@ -268,16 +281,32 @@ router.post('/bookings', requireSubscription, (req, res) => {
 
 router.put('/bookings/:id', requireSubscription, (req, res) => {
   const id = Number(req.params.id);
-  const { cid, type, date, time, addr, total, adv = 0, notes = '' } = req.body || {};
+  const { cid, type, date, time, addr, total, adv = 0, notes = '', items } = req.body || {};
   if (!type || !/^\d{4}-\d{2}-\d{2}$/.test(String(date)) || !/^\d{2}:\d{2}$/.test(String(time)) || !(Number(total) > 0) || Number(adv) > Number(total)) {
     return res.status(400).json({ error: 'Invalid booking details' });
   }
-  const info = db
-    .prepare('UPDATE bookings SET cid=?, type=?, date=?, time=?, addr=?, total=?, adv=?, notes=? WHERE id=? AND user_id=?')
-    .run(Number(cid), String(type), String(date), String(time), String(addr || '-').trim(), Number(total), Number(adv) || 0, String(notes || '').trim(), id, req.userId);
-  if (!info.changes) return res.status(404).json({ error: 'Booking not found' });
-  const updated = db.prepare('SELECT id, cid, type, date, time, addr, total, adv, status, notes FROM bookings WHERE id = ?').get(id);
-  res.json(updated);
+  const cur = db.prepare('SELECT items_json FROM bookings WHERE id = ? AND user_id = ?').get(id, req.userId);
+  if (!cur) return res.status(404).json({ error: 'Booking not found' });
+  const itemsJson = Array.isArray(items) ? JSON.stringify(items) : (cur.items_json || '[]');
+  db.prepare('UPDATE bookings SET cid=?, type=?, date=?, time=?, addr=?, total=?, adv=?, notes=?, items_json=? WHERE id=? AND user_id=?')
+    .run(Number(cid), String(type), String(date), String(time), String(addr || '-').trim(), Number(total), Number(adv) || 0, String(notes || '').trim(), itemsJson, id, req.userId);
+  const b = db.prepare('SELECT id, cid, type, date, time, addr, total, adv, status, notes, items_json FROM bookings WHERE id = ?').get(id);
+  let parsedItems = [];
+  try { parsedItems = JSON.parse(b.items_json || '[]'); } catch {}
+  res.json({ id: b.id, cid: b.cid, type: b.type, date: b.date, time: b.time, addr: b.addr, total: b.total, adv: b.adv, status: b.status, notes: b.notes, items: parsedItems });
+});
+
+router.patch('/bookings/:id/items/:index/toggle', (req, res) => {
+  const id = Number(req.params.id);
+  const idx = Number(req.params.index);
+  const b = db.prepare('SELECT items_json FROM bookings WHERE id = ? AND user_id = ?').get(id, req.userId);
+  if (!b) return res.status(404).json({ error: 'Booking not found' });
+  let items = [];
+  try { items = JSON.parse(b.items_json || '[]'); } catch {}
+  if (!items[idx]) return res.status(404).json({ error: 'Item not found' });
+  items[idx] = { ...items[idx], done: !items[idx].done };
+  db.prepare('UPDATE bookings SET items_json = ? WHERE id = ?').run(JSON.stringify(items), id);
+  res.json({ ok: true, items });
 });
 
 router.patch('/bookings/:id/status', (req, res) => {
@@ -339,6 +368,22 @@ router.patch('/samagri/:id/toggle', (req, res) => {
 router.post('/samagri/mark-all', (req, res) => {
   const puja = String(req.body?.puja || '').trim();
   db.prepare('UPDATE samagri SET done = 1 WHERE user_id = ? AND puja = ?').run(req.userId, puja);
+  res.json({ ok: true });
+});
+
+router.put('/samagri/checks', (req, res) => {
+  const checks = req.body?.checks;
+  if (!checks || typeof checks !== 'object') {
+    return res.status(400).json({ error: 'checks object required' });
+  }
+  const stmt = db.prepare(
+    'INSERT INTO samagri_checks (user_id, item_key, done) VALUES (?, ?, ?) ON CONFLICT(user_id, item_key) DO UPDATE SET done = excluded.done'
+  );
+  runTx(() => {
+    for (const [k, v] of Object.entries(checks)) {
+      stmt.run(req.userId, String(k), v ? 1 : 0);
+    }
+  });
   res.json({ ok: true });
 });
 
