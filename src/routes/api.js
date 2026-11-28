@@ -41,11 +41,11 @@ function requireSubscription(req, res, next) {
 function loadCatalogFromDb() {
   const categories = db.prepare('SELECT id, en, te FROM pooja_categories ORDER BY sort_order').all();
   const poojas = db.prepare('SELECT id, category, en, te FROM pooja_catalog ORDER BY sort_order').all();
-  const allItems = db.prepare('SELECT pooja_id, item, qty, te FROM pooja_catalog_items ORDER BY id').all();
+  const allItems = db.prepare('SELECT id, pooja_id, item, qty, te, price, available FROM pooja_catalog_items ORDER BY id').all();
   const byPooja = new Map();
   for (const it of allItems) {
     if (!byPooja.has(it.pooja_id)) byPooja.set(it.pooja_id, []);
-    byPooja.get(it.pooja_id).push({ item: it.item, qty: it.qty, te: it.te });
+    byPooja.get(it.pooja_id).push({ id: it.id, item: it.item, qty: it.qty, te: it.te, price: it.price ?? 40, available: Boolean(it.available ?? 1) });
   }
   const catalog = poojas.map((p) => ({ ...p, items: byPooja.get(p.id) || [] }));
   return { categories, catalog };

@@ -154,7 +154,20 @@ db.exec(`
     pooja_id TEXT NOT NULL REFERENCES pooja_catalog(id) ON DELETE CASCADE,
     item TEXT NOT NULL,
     qty TEXT NOT NULL,
-    te TEXT NOT NULL
+    te TEXT NOT NULL,
+    price REAL NOT NULL DEFAULT 30,
+    available INTEGER NOT NULL DEFAULT 1
+  );
+
+  CREATE TABLE IF NOT EXISTS web_customers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL UNIQUE,
+    email TEXT DEFAULT '',
+    password_hash TEXT NOT NULL,
+    address TEXT DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'direct',
+    created_at TEXT DEFAULT (datetime('now'))
   );
 
   CREATE TABLE IF NOT EXISTS samagri_checks (
@@ -175,25 +188,46 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS store_orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     token TEXT NOT NULL,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    web_customer_id INTEGER REFERENCES web_customers(id) ON DELETE SET NULL,
     booking_id INTEGER REFERENCES bookings(id) ON DELETE SET NULL,
     customer_name TEXT NOT NULL,
     phone TEXT NOT NULL,
     address TEXT NOT NULL,
     pooja_type TEXT NOT NULL,
     items_json TEXT NOT NULL DEFAULT '[]',
+    missing_items_json TEXT NOT NULL DEFAULT '[]',
+    total_amount REAL NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT 'ayyagaru_link',
     notes TEXT DEFAULT '',
     status TEXT NOT NULL DEFAULT 'pending',
     created_at TEXT DEFAULT (datetime('now'))
   );
 `);
 
-try {
-  db.exec("ALTER TABLE bookings ADD COLUMN items_json TEXT DEFAULT '[]'");
-} catch {}
-try {
-  db.exec("ALTER TABLE bookings ADD COLUMN share_token TEXT DEFAULT ''");
-} catch {}
+try { db.exec("ALTER TABLE bookings ADD COLUMN items_json TEXT DEFAULT '[]'"); } catch {}
+try { db.exec("ALTER TABLE bookings ADD COLUMN share_token TEXT DEFAULT ''"); } catch {}
+try { db.exec('ALTER TABLE pooja_catalog_items ADD COLUMN price REAL NOT NULL DEFAULT 30'); } catch {}
+try { db.exec('ALTER TABLE pooja_catalog_items ADD COLUMN available INTEGER NOT NULL DEFAULT 1'); } catch {}
+try { db.exec('ALTER TABLE store_orders ADD COLUMN web_customer_id INTEGER'); } catch {}
+try { db.exec("ALTER TABLE store_orders ADD COLUMN missing_items_json TEXT DEFAULT '[]'"); } catch {}
+try { db.exec('ALTER TABLE store_orders ADD COLUMN total_amount REAL NOT NULL DEFAULT 0'); } catch {}
+try { db.exec("ALTER TABLE store_orders ADD COLUMN source TEXT DEFAULT 'ayyagaru_link'"); } catch {}
+
+function estimateItemPrice(item, qty) {
+  const s = String(item || '').toLowerCase();
+  const q = String(qty || '').toLowerCase();
+  if (s.includes('saree') || s.includes('vastram') || s.includes('mandapam')) return 350;
+  if (s.includes('idol') || s.includes('lingam') || s.includes('kalasham') || s.includes('kundam') || s.includes('vessel') || s.includes('pot') || s.includes('stove')) return 250;
+  if (s.includes('ghee')) return q.includes('litre') ? 650 : 220;
+  if (s.includes('honey')) return 120;
+  if (s.includes('homam wood') || s.includes('homam samagri')) return 180;
+  if (s.includes('garland') || s.includes('flower') || s.includes('rose') || s.includes('lotus')) return 100;
+  if (s.includes('milk') || s.includes('curd') || s.includes('panchamrutam')) return 70;
+  if (s.includes('coconut')) return 120;
+  if (s.includes('rice') || s.includes('banana') || s.includes('fruit') || s.includes('sweet') || s.includes('payasam') || s.includes('modak')) return 90;
+  return 40;
+}
 
 const { POOJA_CATEGORIES, POOJA_CATALOG } = require('./catalogSeed');
 const catCount = db.prepare('SELECT COUNT(*) AS cnt FROM pooja_catalog').get().cnt;
@@ -202,11 +236,11 @@ if (catCount === 0) {
     const insCat = db.prepare('INSERT OR IGNORE INTO pooja_categories (id, en, te, sort_order) VALUES (?, ?, ?, ?)');
     POOJA_CATEGORIES.forEach((c, idx) => insCat.run(c.id, c.en, c.te, idx));
     const insPooja = db.prepare('INSERT OR IGNORE INTO pooja_catalog (id, category, en, te, sort_order) VALUES (?, ?, ?, ?, ?)');
-    const insItem = db.prepare('INSERT INTO pooja_catalog_items (pooja_id, item, qty, te) VALUES (?, ?, ?, ?)');
+    const insItem = db.prepare('INSERT INTO pooja_catalog_items (pooja_id, item, qty, te, price, available) VALUES (?, ?, ?, ?, ?, 1)');
     POOJA_CATALOG.forEach((p, idx) => {
       insPooja.run(p.id, p.category, p.en, p.te, idx);
       for (const it of p.items) {
-        insItem.run(p.id, it.item, it.qty, it.te);
+        insItem.run(p.id, it.item, it.qty, it.te, estimateItemPrice(it.item, it.qty));
       }
     });
   });
