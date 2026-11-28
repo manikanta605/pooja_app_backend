@@ -133,7 +133,47 @@ db.exec(`
     expires_at TEXT NOT NULL,
     created_at TEXT DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS pooja_categories (
+    id TEXT PRIMARY KEY,
+    en TEXT NOT NULL,
+    te TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS pooja_catalog (
+    id TEXT PRIMARY KEY,
+    category TEXT NOT NULL REFERENCES pooja_categories(id) ON DELETE CASCADE,
+    en TEXT NOT NULL,
+    te TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS pooja_catalog_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pooja_id TEXT NOT NULL REFERENCES pooja_catalog(id) ON DELETE CASCADE,
+    item TEXT NOT NULL,
+    qty TEXT NOT NULL,
+    te TEXT NOT NULL
+  );
 `);
+
+const { POOJA_CATEGORIES, POOJA_CATALOG } = require('./catalogSeed');
+const catCount = db.prepare('SELECT COUNT(*) AS cnt FROM pooja_catalog').get().cnt;
+if (catCount === 0) {
+  runTx(() => {
+    const insCat = db.prepare('INSERT OR IGNORE INTO pooja_categories (id, en, te, sort_order) VALUES (?, ?, ?, ?)');
+    POOJA_CATEGORIES.forEach((c, idx) => insCat.run(c.id, c.en, c.te, idx));
+    const insPooja = db.prepare('INSERT OR IGNORE INTO pooja_catalog (id, category, en, te, sort_order) VALUES (?, ?, ?, ?, ?)');
+    const insItem = db.prepare('INSERT INTO pooja_catalog_items (pooja_id, item, qty, te) VALUES (?, ?, ?, ?)');
+    POOJA_CATALOG.forEach((p, idx) => {
+      insPooja.run(p.id, p.category, p.en, p.te, idx);
+      for (const it of p.items) {
+        insItem.run(p.id, it.item, it.qty, it.te);
+      }
+    });
+  });
+}
 
 try {
   db.exec('ALTER TABLE users ADD COLUMN email TEXT DEFAULT ""');

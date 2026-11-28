@@ -37,6 +37,23 @@ function requireSubscription(req, res, next) {
   next();
 }
 
+function loadCatalogFromDb() {
+  const categories = db.prepare('SELECT id, en, te FROM pooja_categories ORDER BY sort_order').all();
+  const poojas = db.prepare('SELECT id, category, en, te FROM pooja_catalog ORDER BY sort_order').all();
+  const allItems = db.prepare('SELECT pooja_id, item, qty, te FROM pooja_catalog_items ORDER BY id').all();
+  const byPooja = new Map();
+  for (const it of allItems) {
+    if (!byPooja.has(it.pooja_id)) byPooja.set(it.pooja_id, []);
+    byPooja.get(it.pooja_id).push({ item: it.item, qty: it.qty, te: it.te });
+  }
+  const catalog = poojas.map((p) => ({ ...p, items: byPooja.get(p.id) || [] }));
+  return { categories, catalog };
+}
+
+router.get('/catalog', (_req, res) => {
+  res.json(loadCatalogFromDb());
+});
+
 router.get('/bootstrap', (req, res) => {
   const uid = req.userId;
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(uid);
@@ -50,6 +67,7 @@ router.get('/bootstrap', (req, res) => {
   const reminders = db.prepare('SELECT id, title, date, time, done FROM reminders WHERE user_id = ? ORDER BY date, time').all(uid).map((r) => ({ ...r, done: Boolean(r.done) }));
   const rituals = db.prepare('SELECT id, family, gotram, type, date, tithi, reminder_date AS reminderDate FROM rituals WHERE user_id = ? ORDER BY date').all(uid);
   const stock = db.prepare('SELECT id, name, qty, unit, min_qty AS minQty FROM stock WHERE user_id = ? ORDER BY id DESC').all(uid);
+  const { categories, catalog } = loadCatalogFromDb();
 
   res.json({
     lang: user.lang === 'en' ? 'en' : 'te',
@@ -72,6 +90,8 @@ router.get('/bootstrap', (req, res) => {
     reminders,
     rituals,
     stock,
+    categories,
+    catalog,
   });
 });
 
