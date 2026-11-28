@@ -54,6 +54,28 @@ router.get('/catalog', (_req, res) => {
   res.json(loadCatalogFromDb());
 });
 
+router.post('/catalog/items', requireSubscription, (req, res) => {
+  const poojaId = String(req.body?.poojaId || '').trim();
+  const item = String(req.body?.item || '').trim();
+  const te = String(req.body?.te || item).trim() || item;
+  const qty = String(req.body?.qty || '1').trim() || '1';
+  if (!poojaId || !item) {
+    return res.status(400).json({ error: 'Pooja and item name required' });
+  }
+  const exists = db.prepare('SELECT id FROM pooja_catalog WHERE id = ?').get(poojaId);
+  if (!exists) return res.status(404).json({ error: 'Pooja not found' });
+
+  const info = db
+    .prepare('INSERT INTO pooja_catalog_items (pooja_id, item, qty, te) VALUES (?, ?, ?, ?)')
+    .run(poojaId, item, qty, te);
+
+  res.status(201).json({
+    ok: true,
+    poojaId,
+    item: { id: Number(info.lastInsertRowid), item, te, qty },
+  });
+});
+
 router.get('/bootstrap', (req, res) => {
   const uid = req.userId;
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(uid);
