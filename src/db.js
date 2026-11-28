@@ -163,10 +163,36 @@ db.exec(`
     done INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, item_key)
   );
+
+  CREATE TABLE IF NOT EXISTS shared_lists (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    pooja_type TEXT NOT NULL,
+    items_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS store_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token TEXT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    booking_id INTEGER REFERENCES bookings(id) ON DELETE SET NULL,
+    customer_name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    address TEXT NOT NULL,
+    pooja_type TEXT NOT NULL,
+    items_json TEXT NOT NULL DEFAULT '[]',
+    notes TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 try {
   db.exec("ALTER TABLE bookings ADD COLUMN items_json TEXT DEFAULT '[]'");
+} catch {}
+try {
+  db.exec("ALTER TABLE bookings ADD COLUMN share_token TEXT DEFAULT ''");
 } catch {}
 
 const { POOJA_CATEGORIES, POOJA_CATALOG } = require('./catalogSeed');

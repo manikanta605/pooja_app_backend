@@ -4,11 +4,12 @@ const helmet = require('helmet');
 const { dbPath } = require('./db');
 const authRoutes = require('./routes/auth');
 const apiRoutes = require('./routes/api');
+const storeWebRoutes = require('./routes/storeWeb');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
 
-app.use(helmet());
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
@@ -16,6 +17,7 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, db: 'sqlite', dbPath, time: new Date().toISOString() });
 });
 
+app.use('/', storeWebRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api', apiRoutes);
 

@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('node:crypto');
 const { db, runTx } = require('../db');
 const { authRequired } = require('../middleware/auth');
 
@@ -84,12 +85,12 @@ router.get('/bootstrap', (req, res) => {
   const types = db.prepare('SELECT name FROM puja_types WHERE user_id = ? ORDER BY id').all(uid).map((r) => r.name);
   const customers = db.prepare('SELECT id, name, phone, gotram, addr, family, notes FROM customers WHERE user_id = ? ORDER BY id DESC').all(uid);
   const bookings = db
-    .prepare('SELECT id, cid, type, date, time, addr, total, adv, status, notes, items_json FROM bookings WHERE user_id = ? ORDER BY date, time')
+    .prepare('SELECT id, cid, type, date, time, addr, total, adv, status, notes, items_json, share_token FROM bookings WHERE user_id = ? ORDER BY date, time')
     .all(uid)
     .map((b) => {
       let items = [];
       try { items = JSON.parse(b.items_json || '[]'); } catch {}
-      return { id: b.id, cid: b.cid, type: b.type, date: b.date, time: b.time, addr: b.addr, total: b.total, adv: b.adv, status: b.status, notes: b.notes, items };
+      return { id: b.id, cid: b.cid, type: b.type, date: b.date, time: b.time, addr: b.addr, total: b.total, adv: b.adv, status: b.status, notes: b.notes, items, shareToken: b.share_token || '' };
     });
   const samagri = db.prepare('SELECT id, puja, name, qty, done FROM samagri WHERE user_id = ? ORDER BY id').all(uid).map((r) => ({ ...r, done: Boolean(r.done) }));
   const checkRows = db.prepare('SELECT item_key, done FROM samagri_checks WHERE user_id = ?').all(uid);
@@ -254,9 +255,10 @@ router.post('/bookings', requireSubscription, (req, res) => {
     const cust = db.prepare('SELECT id, name FROM customers WHERE id = ? AND user_id = ?').get(targetCid, uid);
     if (!cust) throw Object.assign(new Error('Customer not found'), { status: 404 });
 
+    const shareToken = crypto.randomBytes(6).toString('hex');
     const bInfo = db
-      .prepare('INSERT INTO bookings (user_id, cid, type, date, time, addr, total, adv, status, notes, items_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(uid, targetCid, String(type), String(date), String(time), String(addr || '-').trim(), Number(total), Number(adv) || 0, 'upcoming', String(notes || '').trim(), itemsJson);
+      .prepare('INSERT INTO bookings (user_id, cid, type, date, time, addr, total, adv, status, notes, items_json, share_token) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(uid, targetCid, String(type), String(date), String(time), String(addr || '-').trim(), Number(total), Number(adv) || 0, 'upcoming', String(notes || '').trim(), itemsJson, shareToken);
     const bookingId = Number(bInfo.lastInsertRowid);
 
     let createdPayment = null;
@@ -270,7 +272,7 @@ router.post('/bookings', requireSubscription, (req, res) => {
     }
 
     return {
-      booking: { id: bookingId, cid: targetCid, type: String(type), date: String(date), time: String(time), addr: String(addr || '-').trim(), total: Number(total), adv: Number(adv) || 0, status: 'upcoming', notes: String(notes || '').trim(), items: safeItems },
+      booking: { id: bookingId, cid: targetCid, type: String(type), date: String(date), time: String(time), addr: String(addr || '-').trim(), total: Number(total), adv: Number(adv) || 0, status: 'upcoming', notes: String(notes || '').trim(), items: safeItems, shareToken },
       customer: createdCustomer,
       payment: createdPayment,
     };
@@ -290,10 +292,10 @@ router.put('/bookings/:id', requireSubscription, (req, res) => {
   const itemsJson = Array.isArray(items) ? JSON.stringify(items) : (cur.items_json || '[]');
   db.prepare('UPDATE bookings SET cid=?, type=?, date=?, time=?, addr=?, total=?, adv=?, notes=?, items_json=? WHERE id=? AND user_id=?')
     .run(Number(cid), String(type), String(date), String(time), String(addr || '-').trim(), Number(total), Number(adv) || 0, String(notes || '').trim(), itemsJson, id, req.userId);
-  const b = db.prepare('SELECT id, cid, type, date, time, addr, total, adv, status, notes, items_json FROM bookings WHERE id = ?').get(id);
+  const b = db.prepare('SELECT id, cid, type, date, time, addr, total, adv, status, notes, items_json, share_token FROM bookings WHERE id = ?').get(id);
   let parsedItems = [];
   try { parsedItems = JSON.parse(b.items_json || '[]'); } catch {}
-  res.json({ id: b.id, cid: b.cid, type: b.type, date: b.date, time: b.time, addr: b.addr, total: b.total, adv: b.adv, status: b.status, notes: b.notes, items: parsedItems });
+  res.json({ id: b.id, cid: b.cid, type: b.type, date: b.date, time: b.time, addr: b.addr, total: b.total, adv: b.adv, status: b.status, notes: b.notes, items: parsedItems, shareToken: b.share_token || '' });
 });
 
 router.patch('/bookings/:id/items/:index/toggle', (req, res) => {
@@ -478,6 +480,29 @@ router.patch('/stock/:id/adjust', (req, res) => {
 router.delete('/stock/:id', (req, res) => {
   db.prepare('DELETE FROM stock WHERE id = ? AND user_id = ?').run(Number(req.params.id), req.userId);
   res.json({ ok: true });
+});
+
+/* Store Share Links & Delivery Orders */
+router.post('/store/share', requireSubscription, (req, res) => {
+  const poojaType = String(req.body?.poojaType || 'Pooja Samagri').trim();
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+  if (!items.length) return res.status(400).json({ error: 'Items required' });
+  const token = crypto.randomBytes(6).toString('hex');
+  db.prepare('INSERT INTO shared_lists (token, user_id, pooja_type, items_json) VALUES (?, ?, ?, ?)')
+    .run(token, req.userId, poojaType, JSON.stringify(items));
+  res.status(201).json({ ok: true, token });
+});
+
+router.get('/store/orders', (req, res) => {
+  const rows = db
+    .prepare('SELECT id, token, booking_id AS bookingId, customer_name AS customerName, phone, address, pooja_type AS poojaType, items_json, notes, status, created_at AS createdAt FROM store_orders WHERE user_id = ? ORDER BY id DESC')
+    .all(req.userId)
+    .map((r) => {
+      let items = [];
+      try { items = JSON.parse(r.items_json || '[]'); } catch {}
+      return { ...r, items };
+    });
+  res.json(rows);
 });
 
 module.exports = router;
